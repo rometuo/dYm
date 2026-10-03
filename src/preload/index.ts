@@ -1,6 +1,30 @@
 /// <reference path="./index.d.ts" />
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type {
+  MigrationStatus,
+  PrunePreview,
+  StorageConfigInput,
+  StorageConfigView,
+  StorageQueueStats,
+  StorageTestResult
+} from '../shared/storage'
+import type {
+  AiModelInfo,
+  AiProviderInput,
+  AiProviderView,
+  AnalysisJobItemStatus,
+  AnalysisJobItemView,
+  AnalysisJobView,
+  AnalysisQueueEvent,
+  AnalysisSettings,
+  AsrProviderInput,
+  AsrProviderView,
+  CodexAuthStatus,
+  OpenCodeCliKey,
+  CreateAnalysisJobInput
+} from '../shared/ai'
+import type { PostAnalysisDetail } from '../shared/analysis'
 
 const dbAPI = {
   execute: (sql: string, params?: unknown[]): Promise<unknown> =>
@@ -23,7 +47,8 @@ const settingsAPI = {
 const cookieAPI = {
   fetchDouyin: (): Promise<string> => ipcRenderer.invoke('cookie:fetchDouyin'),
   refreshSilent: (): Promise<string> => ipcRenderer.invoke('cookie:refreshSilent'),
-  isRefreshing: (): Promise<boolean> => ipcRenderer.invoke('cookie:isRefreshing')
+  isRefreshing: (): Promise<boolean> => ipcRenderer.invoke('cookie:isRefreshing'),
+  resetBrowser: (): Promise<void> => ipcRenderer.invoke('cookie:resetBrowser')
 }
 
 const douyinAPI = {
@@ -139,8 +164,10 @@ const liveAPI = {
     ipcRenderer.invoke('live:preparePlayback', id),
   getDanmaku: (id: number): Promise<DanmakuLine[]> => ipcRenderer.invoke('live:getDanmaku', id),
   openPlayer: (id: number): Promise<void> => ipcRenderer.invoke('live:openPlayer', id),
-  deleteRecord: (id: number): Promise<LiveRecord | undefined> =>
-    ipcRenderer.invoke('live:deleteRecord', id),
+  deleteRecord: (id: number, deleteFiles?: boolean): Promise<DeleteLiveRecordsResult> =>
+    ipcRenderer.invoke('live:deleteRecord', id, deleteFiles),
+  deleteRecords: (ids: number[], deleteFiles?: boolean): Promise<DeleteLiveRecordsResult> =>
+    ipcRenderer.invoke('live:deleteRecords', ids, deleteFiles),
   revealFile: (filePath: string): Promise<void> => ipcRenderer.invoke('live:revealFile', filePath),
   updateUserSchedule: (userId: number): Promise<void> =>
     ipcRenderer.invoke('live:updateUserSchedule', userId),
@@ -178,30 +205,78 @@ const postAPI = {
     ipcRenderer.invoke('post:batchRedownload', awemeIds)
 }
 
-const grokAPI = {
-  verify: (apiKey: string, apiUrl: string, model: string): Promise<boolean> =>
-    ipcRenderer.invoke('grok:verify', apiKey, apiUrl, model)
+const aiAPI = {
+  listProviders: (): Promise<AiProviderView[]> => ipcRenderer.invoke('ai:listProviders'),
+  saveProvider: (input: AiProviderInput): Promise<AiProviderView> =>
+    ipcRenderer.invoke('ai:saveProvider', input),
+  deleteProvider: (id: string): Promise<void> => ipcRenderer.invoke('ai:deleteProvider', id),
+  setDefaultProvider: (id: string): Promise<void> =>
+    ipcRenderer.invoke('ai:setDefaultProvider', id),
+  verifyProvider: (input: AiProviderInput): Promise<{ ok: true; message: string }> =>
+    ipcRenderer.invoke('ai:verifyProvider', input),
+  listModels: (input: AiProviderInput): Promise<AiModelInfo[] | null> =>
+    ipcRenderer.invoke('ai:listModels', input),
+  codexStatus: (providerId: string): Promise<CodexAuthStatus> =>
+    ipcRenderer.invoke('ai:codexStatus', providerId),
+  codexLogin: (providerId: string): Promise<CodexAuthStatus> =>
+    ipcRenderer.invoke('ai:codexLogin', providerId),
+  codexCancelLogin: (): Promise<void> => ipcRenderer.invoke('ai:codexCancelLogin'),
+  codexImportFromCli: (providerId: string): Promise<CodexAuthStatus> =>
+    ipcRenderer.invoke('ai:codexImportFromCli', providerId),
+  codexLogout: (providerId: string): Promise<CodexAuthStatus> =>
+    ipcRenderer.invoke('ai:codexLogout', providerId),
+  opencodeCliKey: (baseUrl: string): Promise<OpenCodeCliKey | null> =>
+    ipcRenderer.invoke('ai:opencodeCliKey', baseUrl)
+}
+
+const asrAPI = {
+  listProviders: (): Promise<AsrProviderView[]> => ipcRenderer.invoke('asr:listProviders'),
+  saveProvider: (input: AsrProviderInput): Promise<AsrProviderView> =>
+    ipcRenderer.invoke('asr:saveProvider', input),
+  deleteProvider: (id: string): Promise<void> => ipcRenderer.invoke('asr:deleteProvider', id),
+  setDefaultProvider: (id: string): Promise<void> =>
+    ipcRenderer.invoke('asr:setDefaultProvider', id),
+  verifyProvider: (input: AsrProviderInput): Promise<{ ok: true; message: string }> =>
+    ipcRenderer.invoke('asr:verifyProvider', input)
 }
 
 const analysisAPI = {
-  start: (secUid?: string): Promise<void> => ipcRenderer.invoke('analysis:start', secUid),
-  stop: (): Promise<void> => ipcRenderer.invoke('analysis:stop'),
-  isRunning: (): Promise<boolean> => ipcRenderer.invoke('analysis:isRunning'),
+  getSettings: (): Promise<AnalysisSettings> => ipcRenderer.invoke('analysis:getSettings'),
+  getDetail: (postId: number): Promise<PostAnalysisDetail> =>
+    ipcRenderer.invoke('analysis:getDetail', postId),
+  searchTranscripts: (
+    keyword: string,
+    limit?: number
+  ): Promise<{ postId: number; snippet: string }[]> =>
+    ipcRenderer.invoke('analysis:searchTranscripts', keyword, limit),
+  saveSettings: (patch: Partial<AnalysisSettings>): Promise<AnalysisSettings> =>
+    ipcRenderer.invoke('analysis:saveSettings', patch),
+  createJob: (input: CreateAnalysisJobInput): Promise<AnalysisJobView> =>
+    ipcRenderer.invoke('analysis:createJob', input),
+  listJobs: (): Promise<AnalysisJobView[]> => ipcRenderer.invoke('analysis:listJobs'),
+  getJob: (id: number): Promise<AnalysisJobView | null> =>
+    ipcRenderer.invoke('analysis:getJob', id),
+  getJobItems: (
+    id: number,
+    filter?: { status?: AnalysisJobItemStatus; page?: number; pageSize?: number }
+  ): Promise<{ items: AnalysisJobItemView[]; total: number }> =>
+    ipcRenderer.invoke('analysis:getJobItems', id, filter),
+  pauseJob: (id: number): Promise<void> => ipcRenderer.invoke('analysis:pauseJob', id),
+  resumeJob: (id: number): Promise<void> => ipcRenderer.invoke('analysis:resumeJob', id),
+  cancelJob: (id: number): Promise<void> => ipcRenderer.invoke('analysis:cancelJob', id),
+  retryFailed: (id: number): Promise<number> => ipcRenderer.invoke('analysis:retryFailed', id),
+  deleteJob: (id: number): Promise<void> => ipcRenderer.invoke('analysis:deleteJob', id),
   getUnanalyzedCount: (secUid?: string): Promise<number> =>
     ipcRenderer.invoke('analysis:getUnanalyzedCount', secUid),
   getUnanalyzedCountByUser: (): Promise<{ sec_uid: string; nickname: string; count: number }[]> =>
     ipcRenderer.invoke('analysis:getUnanalyzedCountByUser'),
   getUserStats: (): Promise<UserAnalysisStats[]> => ipcRenderer.invoke('analysis:getUserStats'),
   getTotalStats: (): Promise<TotalAnalysisStats> => ipcRenderer.invoke('analysis:getTotalStats'),
-  reanalyzePost: (postId: number): Promise<void> =>
-    ipcRenderer.invoke('analysis:reanalyzePost', postId),
-  reanalyzePosts: (postIds: number[]): Promise<void> =>
-    ipcRenderer.invoke('analysis:reanalyzePosts', postIds),
-  onProgress: (callback: (progress: AnalysisProgress) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, progress: AnalysisProgress): void =>
-      callback(progress)
-    ipcRenderer.on('analysis:progress', handler)
-    return () => ipcRenderer.removeListener('analysis:progress', handler)
+  onQueue: (callback: (event: AnalysisQueueEvent) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: AnalysisQueueEvent): void =>
+      callback(payload)
+    ipcRenderer.on('analysis:queue', handler)
+    return () => ipcRenderer.removeListener('analysis:queue', handler)
   }
 }
 
@@ -237,13 +312,24 @@ const tagAPI = {
   merge: (names: string[], into: string): Promise<number> =>
     ipcRenderer.invoke('tag:merge', names, into),
   deleteTag: (names: string[]): Promise<number> => ipcRenderer.invoke('tag:delete', names),
-  addCustomTag: (name: string): Promise<void> => ipcRenderer.invoke('tag:addCustomTag', name)
+  addCustomTag: (name: string): Promise<void> => ipcRenderer.invoke('tag:addCustomTag', name),
+  getAliases: (): Promise<TagAliasItem[]> => ipcRenderer.invoke('tag:getAliases'),
+  addAlias: (alias: string, tag: string): Promise<void> =>
+    ipcRenderer.invoke('tag:addAlias', alias, tag),
+  removeAlias: (alias: string): Promise<void> => ipcRenderer.invoke('tag:removeAlias', alias)
 }
 
 const videoAPI = {
   getDetail: (url: string): Promise<VideoInfo> => ipcRenderer.invoke('video:getDetail', url),
   downloadToFolder: (info: VideoInfo): Promise<void> =>
     ipcRenderer.invoke('video:downloadToFolder', info)
+}
+
+const panelAPI = {
+  status: (): Promise<PanelRuntimeStatus> => ipcRenderer.invoke('panel:status'),
+  apply: (): Promise<PanelRuntimeStatus> => ipcRenderer.invoke('panel:apply'),
+  issueLocalKey: (): Promise<{ apiKey: string; url: string }> =>
+    ipcRenderer.invoke('panel:issueLocalKey')
 }
 
 const systemAPI = {
@@ -364,6 +450,23 @@ const scriptsAPI = {
   }
 }
 
+const storageAPI = {
+  getConfig: (): Promise<StorageConfigView> => ipcRenderer.invoke('storage:getConfig'),
+  saveConfig: (input: StorageConfigInput): Promise<StorageConfigView> =>
+    ipcRenderer.invoke('storage:saveConfig', input),
+  test: (): Promise<StorageTestResult> => ipcRenderer.invoke('storage:test'),
+  getStats: (): Promise<StorageQueueStats> => ipcRenderer.invoke('storage:getStats'),
+  enqueueAll: (): Promise<number> => ipcRenderer.invoke('storage:enqueueAll'),
+  retryFailed: (): Promise<number> => ipcRenderer.invoke('storage:retryFailed'),
+  getMigrationStatus: (): Promise<MigrationStatus> =>
+    ipcRenderer.invoke('storage:getMigrationStatus'),
+  startVerify: (): Promise<void> => ipcRenderer.invoke('storage:startVerify'),
+  previewPrune: (fraction: number): Promise<PrunePreview> =>
+    ipcRenderer.invoke('storage:previewPrune', fraction),
+  startPrune: (fraction: number): Promise<void> =>
+    ipcRenderer.invoke('storage:startPrune', fraction)
+}
+
 const api = {
   db: dbAPI,
   settings: settingsAPI,
@@ -377,7 +480,8 @@ const api = {
   collect: collectAPI,
   live: liveAPI,
   post: postAPI,
-  grok: grokAPI,
+  ai: aiAPI,
+  asr: asrAPI,
   analysis: analysisAPI,
   tag: tagAPI,
   video: videoAPI,
@@ -387,7 +491,9 @@ const api = {
   clipboard: clipboardAPI,
   files: filesAPI,
   dashboard: dashboardAPI,
-  scripts: scriptsAPI
+  scripts: scriptsAPI,
+  storage: storageAPI,
+  panel: panelAPI
 }
 
 if (process.contextIsolated) {

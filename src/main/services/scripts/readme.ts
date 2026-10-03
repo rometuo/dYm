@@ -162,14 +162,14 @@ await api.actions.addUser(url)            // 主页/作品链接添加用户
 await api.actions.addVideo(urlOrAwemeId)  // 添加单个作品，可直接传 aweme_id
 await api.actions.syncUser(userId)        // 同步作品列表
 await api.actions.runTask(taskId)         // 执行下载任务
-await api.actions.analyze(secUid?)        // 分析未分析作品
-await api.actions.reanalyzePosts(postIds) // 重新分析
+await api.actions.analyze(secUid?)        // 未分析作品排进分析队列，返回 { jobId, total }，不等分析完成
+await api.actions.reanalyzePosts(postIds) // 指定作品插队重新分析，返回 { jobId, total }
 \`\`\`
 
 ## api.douyin — 抖音只读接口
 
 走应用里配置的 cookie 与签名。收藏相关接口没有用户参数，抖音按 cookie 判断「我」是谁，
-拿到的都是当前登录账号自己的数据。翻页间隔内置 1.5 秒，点「停止」会立即中断。
+拿到的都是当前登录账号自己的数据。翻页间隔默认 1.5 秒，点「停止」会立即中断。
 
 \`\`\`js
 await api.douyin.me()                     // { uid, uniqueId, loggedIn }
@@ -180,6 +180,16 @@ await api.douyin.parseUrl(url)            // { type: 'user'|'video'|'unknown', i
 await api.douyin.collects()               // 收藏夹列表 [{ id, name, total }]
 await api.douyin.collectsVideos(id)       // 某收藏夹的全部作品
 await api.douyin.collectionVideos()       // 「收藏」里的全部作品
+\`\`\`
+
+列表类接口都会自己翻页。嫌慢可以传 \`{ intervalMs }\` 覆盖默认的 1.5 秒间隔——
+调小抓得快，但连续请求更容易触发抖音风控，传 0 表示完全不等待：
+
+\`\`\`js
+await api.douyin.collects({ intervalMs: 500 })
+await api.douyin.collectsVideos(id, { intervalMs: 500 })
+await api.douyin.collectionVideos({ intervalMs: 500 })
+await api.douyin.userVideos(secUid, 50, { intervalMs: 500 })
 \`\`\`
 
 作品列表类接口返回 \`[{ awemeId, desc, nickname, secUid, createTime }]\`，

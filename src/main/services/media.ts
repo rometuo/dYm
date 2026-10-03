@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { existsSync, readdirSync } from 'fs'
 import { join, normalize, resolve, sep } from 'path'
 import { getSetting } from '../database'
+import { findCloudCover, findCloudMediaFiles } from './storage/remote-media'
 
 export interface MediaFiles {
   type: 'video' | 'images'
@@ -40,35 +41,43 @@ export function isPathInDownloadRoot(filePath: string): boolean {
   return resolvedPath === downloadRoot || resolvedPath.startsWith(downloadRoot + sep)
 }
 
+/** 作品的本地目录；新命名就是 awemeId，旧命名（{date}_{nick}_{id}）按后缀匹配 */
+export function resolvePostFolder(secUid: string, folderName: string): string | null {
+  const basePath = join(getDownloadPath(), secUid)
+  if (!existsSync(basePath)) return null
+
+  const exactPath = join(basePath, folderName)
+  if (existsSync(exactPath)) return exactPath
+
+  try {
+    const folders = readdirSync(basePath)
+    const match = folders.find((f) => f.endsWith(folderName) || f.includes(`_${folderName}`))
+    return match ? join(basePath, match) : null
+  } catch {
+    return null
+  }
+}
+
 export function findMediaFiles(
   secUid: string,
   folderName: string,
   awemeType: number
 ): MediaFiles | null {
-  const basePath = join(getDownloadPath(), secUid)
-  if (!existsSync(basePath)) return null
+  const targetFolder = resolvePostFolder(secUid, folderName)
+  // 本地没有（已迁到对象存储并清理）就用云端地址
+  if (!targetFolder) return findCloudMediaFiles(folderName, awemeType)
 
-  let targetFolder: string | null = null
-  const exactPath = join(basePath, folderName)
-
-  if (existsSync(exactPath)) {
-    targetFolder = exactPath
-  } else {
-    try {
-      const folders = readdirSync(basePath)
-      for (const folder of folders) {
-        if (folder.endsWith(folderName) || folder.includes(`_${folderName}`)) {
-          targetFolder = join(basePath, folder)
-          break
-        }
-      }
-    } catch {
-      return null
-    }
+  const local = readLocalMediaFiles(targetFolder, awemeType)
+  const lacksMedia = local && (local.type === 'images' ? !local.images?.length : !local.video)
+  if (lacksMedia) {
+    // 本地清理到只剩封面：媒体用云端地址，封面仍用本地的（列表秒开）
+    const cloud = findCloudMediaFiles(folderName, awemeType)
+    if (cloud) return { ...cloud, cover: local.cover ?? cloud.cover }
   }
+  return local
+}
 
-  if (!targetFolder) return null
-
+function readLocalMediaFiles(targetFolder: string, awemeType: number): MediaFiles | null {
   try {
     const files = readdirSync(targetFolder)
     const coverFile = files.find((f) => f.includes('_cover.'))
@@ -136,19 +145,22 @@ export function findMediaFiles(
 
 export function findCoverFile(secUid: string, folderName: string): string | null {
   const basePath = join(getDownloadPath(), secUid)
-  if (!existsSync(basePath)) return null
+  if (!existsSync(basePath)) return findCloudCover(folderName)
 
   const exactPath = join(basePath, folderName)
   if (existsSync(exactPath)) {
+    // 目录存在但没有封面就到此为止：再去扫整个作者目录（几千项）也找不到别的，
+    // 首页一页里几十个「无封面」作品会让主线程卡秒级
     try {
       const files = readdirSync(exactPath)
       const coverFile = files.find((f) => f.includes('_cover.'))
-      if (coverFile) return toUrlPath(join(exactPath, coverFile))
+      return coverFile ? toUrlPath(join(exactPath, coverFile)) : null
     } catch {
       return null
     }
   }
 
+  // 只有旧命名（{date}_{nick}_{id}）的目录才需要按后缀匹配
   try {
     const folders = readdirSync(basePath)
     for (const folder of folders) {
@@ -163,5 +175,5 @@ export function findCoverFile(secUid: string, folderName: string): string | null
     return null
   }
 
-  return null
+  return findCloudCover(folderName)
 }

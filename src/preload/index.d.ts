@@ -1,4 +1,28 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
+import type {
+  AiModelInfo,
+  AiProviderInput,
+  AiProviderView,
+  AnalysisJobItemStatus,
+  AnalysisJobItemView,
+  AnalysisJobView,
+  AnalysisQueueEvent,
+  AnalysisSettings,
+  AsrProviderInput,
+  AsrProviderView,
+  CodexAuthStatus,
+  OpenCodeCliKey,
+  CreateAnalysisJobInput
+} from '../shared/ai'
+import type { PostAnalysisDetail } from '../shared/analysis'
+import type {
+  MigrationStatus,
+  PrunePreview,
+  StorageConfigInput,
+  StorageConfigView,
+  StorageQueueStats,
+  StorageTestResult
+} from '../shared/storage'
 
 declare global {
   interface DatabaseAPI {
@@ -18,6 +42,8 @@ declare global {
     fetchDouyin: () => Promise<string>
     refreshSilent: () => Promise<string>
     isRefreshing: () => Promise<boolean>
+    /** 清空登录浏览器分区与已保存的 Cookie，之后需重新登录 */
+    resetBrowser: () => Promise<void>
   }
 
   interface UserProfile {
@@ -360,6 +386,13 @@ declare global {
     filePath: string | null
   }
 
+  // 批量删除录制记录的结果（录制中 / 转换中的会进 failed）
+  interface DeleteLiveRecordsResult {
+    deleted: number
+    freedBytes: number
+    failed: { id: number; reason: string }[]
+  }
+
   interface LiveAPI {
     isRecording: (userId: number) => Promise<boolean>
     getRecordingUsers: () => Promise<number[]>
@@ -370,7 +403,8 @@ declare global {
     preparePlayback: (id: number) => Promise<LivePlaybackInfo>
     getDanmaku: (id: number) => Promise<DanmakuLine[]>
     openPlayer: (id: number) => Promise<void>
-    deleteRecord: (id: number) => Promise<LiveRecord | undefined>
+    deleteRecord: (id: number, deleteFiles?: boolean) => Promise<DeleteLiveRecordsResult>
+    deleteRecords: (ids: number[], deleteFiles?: boolean) => Promise<DeleteLiveRecordsResult>
     revealFile: (filePath: string) => Promise<void>
     updateUserSchedule: (userId: number) => Promise<void>
     onProgress: (callback: (progress: LiveProgress) => void) => () => void
@@ -398,6 +432,8 @@ declare global {
     analysis_content_level: number | null
     analyzed_at: number | null
     manual_tags: string | null
+    analysis_raw: string | null
+    analysis_model: string | null
   }
 
   interface MediaFiles {
@@ -458,17 +494,6 @@ declare global {
     batchRedownload: (awemeIds: string[]) => Promise<{ success: number; failed: number }>
   }
 
-  interface AnalysisProgress {
-    status: 'running' | 'completed' | 'failed' | 'stopped'
-    currentPost: string | null
-    currentIndex: number
-    totalPosts: number
-    analyzedCount: number
-    failedCount: number
-    message: string
-    lastResult?: { postId: number; ok: boolean; title: string }
-  }
-
   interface UnanalyzedUserCount {
     sec_uid: string
     nickname: string
@@ -489,21 +514,70 @@ declare global {
     unanalyzed: number
   }
 
-  interface GrokAPI {
-    verify: (apiKey: string, apiUrl: string, model: string) => Promise<boolean>
+  interface AiAPI {
+    listProviders: () => Promise<AiProviderView[]>
+    /** apiKey 为 undefined 表示不改动已存密钥；空串表示清空 */
+    saveProvider: (input: AiProviderInput) => Promise<AiProviderView>
+    deleteProvider: (id: string) => Promise<void>
+    setDefaultProvider: (id: string) => Promise<void>
+    /** 用表单草稿验证连通性（未保存也可） */
+    verifyProvider: (input: AiProviderInput) => Promise<{ ok: true; message: string }>
+    /** 拉模型列表；协议不支持时为 null */
+    listModels: (input: AiProviderInput) => Promise<AiModelInfo[] | null>
+    codexStatus: (providerId: string) => Promise<CodexAuthStatus>
+    /** 打开浏览器完成 ChatGPT 授权；resolve 时已登录 */
+    codexLogin: (providerId: string) => Promise<CodexAuthStatus>
+    codexCancelLogin: () => Promise<void>
+    codexImportFromCli: (providerId: string) => Promise<CodexAuthStatus>
+    codexLogout: (providerId: string) => Promise<CodexAuthStatus>
+    /** 本机 OpenCode CLI（/connect 保存的）里与地址匹配的 Zen/Go API Key；没有为 null */
+    opencodeCliKey: (baseUrl: string) => Promise<OpenCodeCliKey | null>
+  }
+
+  interface AsrAPI {
+    listProviders: () => Promise<AsrProviderView[]>
+    saveProvider: (input: AsrProviderInput) => Promise<AsrProviderView>
+    deleteProvider: (id: string) => Promise<void>
+    setDefaultProvider: (id: string) => Promise<void>
+    /** 用一小段合成音频验证连通性（未保存也可） */
+    verifyProvider: (input: AsrProviderInput) => Promise<{ ok: true; message: string }>
   }
 
   interface AnalysisAPI {
-    start: (secUid?: string) => Promise<void>
-    stop: () => Promise<void>
-    isRunning: () => Promise<boolean>
+    getSettings: () => Promise<AnalysisSettings>
+    /** 单条作品的结构化分析、元信息与字幕 */
+    getDetail: (postId: number) => Promise<PostAnalysisDetail>
+    /** 字幕全文检索 */
+    searchTranscripts: (
+      keyword: string,
+      limit?: number
+    ) => Promise<{ postId: number; snippet: string }[]>
+    /** 只更新传入字段；主进程校验范围，非法值抛错 */
+    saveSettings: (patch: Partial<AnalysisSettings>) => Promise<AnalysisSettings>
+    createJob: (input: CreateAnalysisJobInput) => Promise<AnalysisJobView>
+    listJobs: () => Promise<AnalysisJobView[]>
+    getJob: (id: number) => Promise<AnalysisJobView | null>
+    getJobItems: (
+      id: number,
+      filter?: { status?: AnalysisJobItemStatus; page?: number; pageSize?: number }
+    ) => Promise<{ items: AnalysisJobItemView[]; total: number }>
+    pauseJob: (id: number) => Promise<void>
+    resumeJob: (id: number) => Promise<void>
+    cancelJob: (id: number) => Promise<void>
+    /** 失败条目重新排队，返回条数 */
+    retryFailed: (id: number) => Promise<number>
+    deleteJob: (id: number) => Promise<void>
     getUnanalyzedCount: (secUid?: string) => Promise<number>
     getUnanalyzedCountByUser: () => Promise<UnanalyzedUserCount[]>
     getUserStats: () => Promise<UserAnalysisStats[]>
     getTotalStats: () => Promise<TotalAnalysisStats>
-    reanalyzePost: (postId: number) => Promise<void>
-    reanalyzePosts: (postIds: number[]) => Promise<void>
-    onProgress: (callback: (progress: AnalysisProgress) => void) => () => void
+    /** 队列快照推送（节流）；itemDone 存在时表示刚有一条完成 */
+    onQueue: (callback: (event: AnalysisQueueEvent) => void) => () => void
+  }
+
+  interface TagAliasItem {
+    alias: string
+    tag: string
   }
 
   interface TagOverviewStats {
@@ -592,6 +666,10 @@ declare global {
     merge: (names: string[], into: string) => Promise<number>
     deleteTag: (names: string[]) => Promise<number>
     addCustomTag: (name: string) => Promise<void>
+    getAliases: () => Promise<TagAliasItem[]>
+    /** 登记别名：以后模型输出 alias 会并到 tag；alias 已是独立标签时等同合并 */
+    addAlias: (alias: string, tag: string) => Promise<void>
+    removeAlias: (alias: string) => Promise<void>
   }
 
   interface VideoInfo {
@@ -622,6 +700,22 @@ declare global {
     preferredPort: number
     origin: string
     urls: string[]
+  }
+
+  interface PanelRuntimeStatus {
+    embedStarted: boolean
+    port: number
+    host: string
+    urls: string[]
+    adminToken: string
+    agent: 'off' | 'connecting' | 'online' | 'error'
+    agentError: string | null
+  }
+
+  interface PanelAPI {
+    status: () => Promise<PanelRuntimeStatus>
+    apply: () => Promise<PanelRuntimeStatus>
+    issueLocalKey: () => Promise<{ apiKey: string; url: string }>
   }
 
   interface SystemAPI {
@@ -721,6 +815,19 @@ declare global {
     getContentLevelDistribution: () => Promise<LevelDistItem[]>
   }
 
+  interface StorageAPI {
+    getConfig: () => Promise<StorageConfigView>
+    saveConfig: (input: StorageConfigInput) => Promise<StorageConfigView>
+    test: () => Promise<StorageTestResult>
+    getStats: () => Promise<StorageQueueStats>
+    enqueueAll: () => Promise<number>
+    retryFailed: () => Promise<number>
+    getMigrationStatus: () => Promise<MigrationStatus>
+    startVerify: () => Promise<void>
+    previewPrune: (fraction: number) => Promise<PrunePreview>
+    startPrune: (fraction: number) => Promise<void>
+  }
+
   interface API {
     db: DatabaseAPI
     settings: SettingsAPI
@@ -734,7 +841,8 @@ declare global {
     collect: CollectAPI
     live: LiveAPI
     post: PostAPI
-    grok: GrokAPI
+    ai: AiAPI
+    asr: AsrAPI
     analysis: AnalysisAPI
     tag: TagAPI
     video: VideoAPI
@@ -745,6 +853,8 @@ declare global {
     files: FilesAPI
     dashboard: DashboardAPI
     scripts: ScriptsAPI
+    storage: StorageAPI
+    panel: PanelAPI
   }
 
   interface Window {
